@@ -55,7 +55,10 @@ namespace Foundation.Threading.Tasks
                         {
                             // only remove from _resources when evident, that it is no longer in use
                             if (resourceToDelete.RefCount == 0)
+                            {
                                 _resources.Remove(resourceToDelete.Name);
+                                resourceToDelete.Dispose();
+                            }
                         }
                     });
                     _resources.Add(name, resource);
