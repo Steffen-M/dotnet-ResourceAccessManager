@@ -10,7 +10,8 @@ namespace Foundation.Threading.Tasks
     /// Manages exclusive access to named resources in a TPL friendly manner.
     /// </summary>
     /// <remarks>
-    /// Nested calls to <see cref="AcquireExclusiveAccessAsync"/> for the same resource are not supported by design.
+    /// Nested calls to <see cref="AcquireExclusiveAccessAsync(string, CancellationToken)"/>
+    /// for the same resource are not supported by design.
     /// </remarks>
     public sealed class ResourceAccessManager
     {
@@ -50,7 +51,10 @@ namespace Foundation.Threading.Tasks
             if (Debugger.IsAttached)
                 cancellationToken = default(CancellationToken);
 #endif
-            AwaitableLock awaitableLock;
+            if (name == null)
+                throw new ArgumentNullException(nameof(name));
+
+            AccessHandle accessHandle;
             lock (_resources)
             {
                 Resource resource;
@@ -60,7 +64,7 @@ namespace Foundation.Threading.Tasks
                     {
                         lock (_resources)
                         {
-                            // only remove from _resources when evident, that it is no longer in use
+                            // only remove from _resources when evident, that it is still no longer in use
                             if (resourceToDelete.RefCount == 0)
                             {
                                 _resources.Remove(resourceToDelete.Name);
@@ -70,17 +74,17 @@ namespace Foundation.Threading.Tasks
                     });
                     _resources.Add(name, resource);
                 }
-                awaitableLock = new AwaitableLock(resource);
+                accessHandle = new AccessHandle(resource);
             }
 
             try
             {
-                await awaitableLock.WaitAsync(cancellationToken);
-                return awaitableLock;
+                await accessHandle.WaitAsync(cancellationToken);
+                return accessHandle;
             }
             catch
             {
-                awaitableLock.Dispose();
+                accessHandle.Dispose();
                 throw;
             }
         }
@@ -106,9 +110,9 @@ namespace Foundation.Threading.Tasks
         /// <summary>
         /// Handles waiting for a <see cref="Resource"/>.
         /// </summary>
-        private class AwaitableLock : IDisposable
+        private class AccessHandle : IDisposable
         {
-            public AwaitableLock(Resource resource)
+            public AccessHandle(Resource resource)
             {
                 _resource = resource;
                 _resource.AddRef();
@@ -122,6 +126,7 @@ namespace Foundation.Threading.Tasks
 
             public void Dispose()
             {
+                // ensure the resource is only released once
                 var resource = _resource;
                 _resource = null;
                 resource?.Release(_acquired);
