@@ -9,6 +9,9 @@ namespace Foundation.Threading.Tasks
     /// <summary>
     /// Manages exclusive access to named resources in a TPL friendly manner.
     /// </summary>
+    /// <remarks>
+    /// Nested calls to <see cref="AcquireExclusiveAccessAsync"/> for the same resource are not supported by design.
+    /// </remarks>
     public sealed class ResourceAccessManager
     {
         /// <summary>
@@ -17,7 +20,7 @@ namespace Foundation.Threading.Tasks
         public static ResourceAccessManager Default { get; } = new ResourceAccessManager();
 
         /// <summary>
-        /// Creates an instance.
+        /// Creates an instance of a <see cref="ResourceAccessManager"/>.
         /// </summary>
         public ResourceAccessManager()
         {
@@ -25,18 +28,22 @@ namespace Foundation.Threading.Tasks
         }
 
         /// <summary>
-        /// Locks access to the requested named resource.
+        /// Acquires access to the requested named resource.
         /// </summary>
-        /// <param name="name">Name of the resource to get exclusive access</param>
-        /// <param name="cancellationToken">Cancel waiting from the outside</param>
+        /// <param name="name">Name of the resource to get exclusive access to.</param>
+        /// <param name="cancellationToken">Cancel waiting from the outside.</param>
         /// <returns>Disposable handle to release the exclusive access.</returns>
+        /// <exception cref="System.OperationCanceledException">When the <paramref name="cancellationToken"/> indicates cancellation.</exception>
+        /// <remarks>
+        /// Consider setting a timeout on the <see cref="System.Threading.CancellationTokenSource"/> of <paramref name="cancellationToken"/> to prevent deadlocks.
+        /// </remarks>
         /// <example><code>
-        ///     using (await ResourceAccessManager.Default.LockAsync(fileName, CancellationToken.None))
+        ///     using (await ResourceAccessManager.Default.AcquiresExclusiveAccessAsync(fileName, CancellationToken.None))
         ///     {
         ///         ...
         ///     }
         /// </code></example>
-        public async Task<IDisposable> LockAsync(string name, CancellationToken cancellationToken = default(CancellationToken))
+        public async Task<IDisposable> AcquireExclusiveAccessAsync(string name, CancellationToken cancellationToken = default(CancellationToken))
         {
 #if DEBUG
             // prevent unwanted cancellation while debugging
@@ -79,22 +86,26 @@ namespace Foundation.Threading.Tasks
         }
 
         /// <summary>
-        /// Locks access to the requested named resource.
+        /// Acquires access to the requested named resource.
         /// </summary>
-        /// <param name="name">Name of the resource to get exclusive access</param>
-        /// <param name="timeout">Cancel waiting after this timeout</param>
+        /// <param name="name">Name of the resource to get exclusive access to.</param>
+        /// <param name="timeout">Cancel waiting after this timeout.</param>
         /// <returns>Disposable handle to release the exclusive access.</returns>
+        /// <exception cref="System.OperationCanceledException">When the timeout expired</exception>
         /// <example><code>
-        ///     using (await ResourceAccessManager.Default.LockAsync(fileName, TimeSpan.FromSeconds(5)))
+        ///     using (await ResourceAccessManager.Default.AcquiresExclusiveAccessAsync(fileName, TimeSpan.FromSeconds(5)))
         ///     {
         ///         ...
         ///     }
         /// </code></example>
-        public Task<IDisposable> LockAsync(string name, TimeSpan timeout)
-        {            
-            return LockAsync(name, new CancellationTokenSource(timeout).Token);
+        public Task<IDisposable> AcquireExclusiveAccessAsync(string name, TimeSpan timeout)
+        {
+            return AcquireExclusiveAccessAsync(name, new CancellationTokenSource(timeout).Token);
         }
 
+        /// <summary>
+        /// Handles waiting for a <see cref="Resource"/>.
+        /// </summary>
         private class AwaitableLock : IDisposable
         {
             public AwaitableLock(Resource resource)
@@ -106,18 +117,23 @@ namespace Foundation.Threading.Tasks
             public async Task WaitAsync(CancellationToken cancellationToken)
             {
                 await _resource.WaitAsync(cancellationToken);
-                _aquired += 1;
+                _acquired += 1;
             }
 
             public void Dispose()
             {
-                _resource.Release(_aquired);
+                var resource = _resource;
+                _resource = null;
+                resource?.Release(_acquired);
             }
 
-            private readonly Resource _resource;
-            private int _aquired;
+            private Resource _resource;
+            private int _acquired;
         }
 
+        /// <summary>
+        /// Encapsulates a <see cref="System.Threading.SemaphoreSlim"/>.
+        /// </summary>
         private class Resource : IDisposable
         {
             public string Name { get; }
@@ -140,10 +156,10 @@ namespace Foundation.Threading.Tasks
                 return _semaphore.WaitAsync(cancellationToken);
             }
 
-            public void Release(int aquired)
+            public void Release(int acquired)
             {
-                if (aquired > 0)
-                    _semaphore.Release(aquired);
+                if (acquired > 0)
+                    _semaphore.Release(acquired);
 
                 if (Interlocked.Decrement(ref _refCount) == 0)
                     _release(this);
